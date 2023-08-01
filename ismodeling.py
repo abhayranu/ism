@@ -135,9 +135,7 @@ if __name__ == "__main__":
 
     condition = True
     B_old = B
-    n = 0
     while condition:
-        n += 1
         B_new = bmm(B,B_old)
         if eq(B_old, B_new):
             condition = False
