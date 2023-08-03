@@ -1,13 +1,11 @@
-##  Import Modules  ##
-
 import tkinter as tk
 from tkinter import ttk
 import numpy as np
 import networkx as nx
 from networkx.drawing.nx_agraph import graphviz_layout
 import matplotlib.pyplot as plt
-
-
+import pandas as pd
+import pygraphviz as pgv
 
 ##  Prompt User to Input Number of Features for the Interpretive Structural Model   ##
 
@@ -126,36 +124,39 @@ if __name__ == "__main__":
     matrix_values = get_matrix_values()
 
 
-    A = np.array(matrix_values)                     # Get the Matrix from The input values of the GUI
-    l = len(A)                                      
-    B = A + np.eye(l, dtype='int64')                # Create the Adjacenty Matrix B
+    # Get the Matrix from The input values of the GUI #
+
+    A = np.array(matrix_values)                     
+    l = len(A)
+
+    # Create the Adjacency Matrix B #
+
+    B = A + np.eye(l, dtype='int64')
 
 
-    ##  Loop to Find the Reachability Matrix T  ##
+    # Loop to Find the Reachability Matrix T #
 
     condition = True
-    B_old = B
+    B_old = B.copy()
     while condition:
         B_new = bmm(B,B_old)
         if eq(B_old, B_new):
             condition = False
         else:
-            B_old = B_new
+            B_old = B_new.copy()
     T = B_old
 
 
+    # FInding the Reachability Set, the Antecedent Set and the Intersection of the two Sets #
 
-
-    ##  Finding the Reachability Set, the Antecedent Set and the Intersection of the two sets   ##
-
-    R_set, A_set, I_set = list(), list(), list()
+    R_set, A_set, I_set = [], [], []
     for i in range(l):
-        Rtemp_set = list()
+        Rtemp_set = []
         for j, jtem in enumerate(T[i,:]):
             if jtem==1:
                 Rtemp_set.append(j+1)
         R_set.append(Rtemp_set)
-        Atemp_set = list()
+        Atemp_set = []
         for k, ktem in enumerate(T[:,i]):
             if ktem==1:
                 Atemp_set.append(k+1)
@@ -163,21 +164,18 @@ if __name__ == "__main__":
         I_set.append(intersection(R_set[i],A_set[i]))
 
 
-
-
-    ##  Finding the Hierarchical Level from the Reacheability set and the Antecedent set    ##
+    # Loop Partitioning and Finding Hierarchical Level #
 
     L_set = np.zeros(l, dtype='int64')
     condition = True
     n = 0
     while condition:
         n += 1
-        com = list()
+        com = []
         for i, item in enumerate(R_set):
             if len(item)==1:
                 L_set[i] = n
                 com.append(item[0])
-        # print(com)
         for c in com:
             for j, _ in enumerate(R_set):
                 if c in R_set[j]:
@@ -187,53 +185,81 @@ if __name__ == "__main__":
                     A_set[k].remove(c)
         if np.prod(L_set)!=0:
             condition = False
-
     
 
-    ##  Creating Hierarchical Graph Structure   ##
+    # Reduction into Canonical Matrix from the Reachability Matrix #
+
+    CM = pd.DataFrame(T, columns=column_names, index=column_names)
+    CM['Level'] = L_set.astype(dtype='int64')
+    new_row = pd.DataFrame(L_set, index=column_names, columns=['Level'])
+    CM = pd.concat([CM, new_row.T])
+    CM = CM.sort_values(by=CM.columns[-1], axis=0)
+    CM = CM.sort_values(by=CM.columns[-1], axis=1)
+    RCM = CM.copy()
+    n = len(column_names)
+    RCM.columns = np.arange(1,n+2)
+    RCM.index = np.arange(1,n+2)
+
+    for i in range(1,n+1):
+        for j in range(i,n+1):
+            if (RCM.at[j+1,i]==1) and (RCM.at[j+1,n+1]>RCM.at[i,n+1]):
+                L = RCM.at[j+1,n+1]+1
+                break
+        if L not in L_set:
+            continue
+        for j in range(i,n+1):
+            if RCM.at[j,n+1]==L:
+                break 
+        for j in range(j,n+1):
+            RCM.at[j,i] = 0
+
+
+    RCM_new = RCM.copy()
+    RCM_new.columns = CM.columns
+    RCM_new.index = CM.index
+
+    lev = np.sort(L_set)
+    lev_n = []
+    for i in range(1,np.max(lev)+1):
+        ac = np.argwhere(lev==i).flatten()
+        # print(ac)
+        lev_n.append([RCM_new.columns[item] for item in ac])
+    
+    lev_nn = {i: lev_n[i] for i in range(len(lev_n))}
+
+
+    # Initializing the Hierarchical Directed Graph Structure #
 
     G = nx.DiGraph()
-    for item in column_names:
-        G.add_node(item)
+    for i, item in enumerate(RCM_new.columns[:-1]):
+        G.add_node(item, level=lev[i])
 
 
-    ##  Connecting Nodes Based on the Reachability Matrix According to the Hierarchical Level   ##
+    # Finding the Reduced Canonical Matrix #
 
-    while np.max(L_set)!=0:
-        m_h = np.argwhere(L_set==np.amax(L_set)).flatten()
-        for m in m_h:
-            for i, item in enumerate(B[m,:]):
-                if item==1:
-                    if i!=m:
-                        G.add_edge(column_names[m],column_names[i])
-            L_set[m] = 0
+    RCM_new.drop(index='Level', inplace=True)
+    RCM_new.drop(columns='Level', inplace=True)
 
+    F = RCM_new.to_numpy(dtype='int64')
 
+    for j in range(l-1,-1,-1):
+        for k, ktem in enumerate(F[j,:j]):
+            if ktem==1:
+                G.add_edge(RCM_new.columns[j], RCM_new.columns[k])
+    
 
-    ##  Manipulation of Graph Structure to Make it Presentable  ##
+    # Determining Position and Plotting the Hierarchical Directed Graph #
+    
+    pos = nx.multipartite_layout(G, subset_key='level', align='horizontal')
 
-    pos = graphviz_layout(G, prog='dot')
+    plt.figure(figsize=(15,15))
+    levels = lev_nn
+    for level, nodes in levels.items():
+        color = plt.cm.tab20(level / np.max(lev))
+        nx.draw_networkx_nodes(G, pos, nodelist=nodes)
+        nx.draw_networkx_labels(G, pos, labels={node: node for node in nodes})
 
-    center_x = sum(x for x, y in pos.values()) / len(pos)
-    center_y = sum(y for x, y in pos.values()) / len(pos)
-
-    for node in pos:
-        x, y = pos[node]
-        dx = x - center_x
-        dy = y - center_y
-        pos[node] = (center_x - dx, center_y - dy)
-
-    for node in pos:
-        pos[node] = (pos[node][0] * -1, pos[node][1])
-
-
-
-    ##  Plotting the Hierarchical Directed Graph for the ISM of a Service Robot ##
-
-    plt.figure(figsize=(8,6))
-    nx.draw(G, pos, with_labels=True, node_size=3000, node_color='skyblue',
-            arrowsize=20, font_size=9, font_weight='bold', 
-            connectionstyle='arc')
-    plt.title('Hierarchical Directed Graph(ISM) - Service Robot', fontsize=15)
+    nx.draw_networkx_edges(G, pos, alpha=0.5, arrows=True)
+    plt.legend()
     plt.axis('off')
     plt.show()
